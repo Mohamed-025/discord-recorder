@@ -2,10 +2,10 @@ const { spawn } = require("child_process");
 const { EndBehaviorType } = require("@discordjs/voice");
 const fs = require("fs");
 const path = require("path");
-const { PassThrough, pipeline } = require("stream");
+const { pipeline } = require("stream");
+const prism = require("prism-media");
 
 const ffmpegPath = require("ffmpeg-static");
-const prism = require("prism-media");
 
 function createMeetingDir() {
     const meetingFolder = `meeting_${new Date().toISOString().replace(/[:.]/g, "-")}`;
@@ -14,32 +14,54 @@ function createMeetingDir() {
     return { meetingFolder, meetingPath };
 }
 
-function createFfmpegProcess(outputFilePath) {
-    return spawn(
-        ffmpegPath,
-        [
-            "-y",
-            "-loglevel",
-            "error",
-            "-f",
-            "s16le",
-            "-ar",
-            "48000",
-            "-ac",
-            "2",
-            "-i",
-            "-",
+function safeUserFileName(userId) {
+    return `${userId}`.replace(/[^a-zA-Z0-9_-]/g, "_");
+}
+
+async function mixUserAudioFiles(meetingPath, outputFilePath) {
+    const userFiles = fs
+        .readdirSync(meetingPath)
+        .filter((file) => file.endsWith(".pcm"))
+        .map((file) => path.join(meetingPath, file));
+
+    if (!userFiles.length) {
+        throw new Error("No user audio files to mix.");
+    }
+
+    const args = ["-y"];
+    for (const filePath of userFiles) {
+        args.push("-f", "s16le", "-ar", "48000", "-ac", "2", "-i", filePath);
+    }
+
+    if (userFiles.length === 1) {
+        args.push("-vn", "-acodec", "libmp3lame", "-b:a", "128k", outputFilePath);
+    } else {
+        args.push(
+            "-filter_complex",
+            `amix=inputs=${userFiles.length}:dropout_transition=2`,
             "-vn",
             "-acodec",
             "libmp3lame",
             "-b:a",
             "128k",
-            "-f",
-            "mp3",
-            outputFilePath,
-        ],
-        { stdio: ["pipe", "inherit", "inherit"] }
-    );
+            outputFilePath
+        );
+    }
+
+    const ffmpeg = spawn(ffmpegPath, args, {
+        stdio: ["ignore", "inherit", "inherit"],
+    });
+
+    return new Promise((resolve, reject) => {
+        ffmpeg.once("error", reject);
+        ffmpeg.once("close", (code) => {
+            if (code === 0) {
+                resolve(outputFilePath);
+            } else {
+                reject(new Error(`FFmpeg exited with code ${code}`));
+            }
+        });
+    });
 }
 
 module.exports = {
@@ -69,19 +91,10 @@ module.exports = {
         session.meetingPath = meetingPath;
         session.meetingFilePath = meetingFilePath;
         session.activeStreams = new Map();
-        session.meetingFfmpeg = null;
-        session.meetingInput = null;
         session.speakingListener = null;
 
         console.log("🎙️ Recorder Ready");
         console.log("Meeting Folder:", meetingPath);
-
-        const ffmpeg = createFfmpegProcess(meetingFilePath);
-        const input = new PassThrough();
-        input.pipe(ffmpeg.stdin);
-
-        session.meetingFfmpeg = ffmpeg;
-        session.meetingInput = input;
 
         const handleSpeakingStart = (userId) => {
             if (!session.recording || session.recordingSessionId !== session.currentRecordingSessionId) {
@@ -105,6 +118,9 @@ module.exports = {
                 frameSize: 960,
             });
 
+            const userFilePath = path.join(meetingPath, `${safeUserFileName(userId)}.pcm`);
+            const fileStream = fs.createWriteStream(userFilePath, { flags: "a" });
+
             const cleanup = () => {
                 const current = session.activeStreams.get(userId);
                 if (current?.audioStream === audioStream) {
@@ -113,6 +129,7 @@ module.exports = {
                 try {
                     audioStream.removeAllListeners();
                     decoder.removeAllListeners();
+                    fileStream.removeAllListeners();
                 } catch (error) {
                     // ignore cleanup listener errors
                 }
@@ -130,10 +147,8 @@ module.exports = {
             };
 
             const pipelineDone = (error) => {
-                if (error) {
-                    if (!session.isStopping && error.code !== "ERR_STREAM_PREMATURE_CLOSE") {
-                        console.error(`❌ Recording error for ${userId}:`, error);
-                    }
+                if (error && !session.isStopping && error.code !== "ERR_STREAM_PREMATURE_CLOSE") {
+                    console.error(`❌ Recording error for ${userId}:`, error);
                 } else {
                     console.log(`✅ Audio segment finished for ${userId}`);
                 }
@@ -146,7 +161,7 @@ module.exports = {
             }
 
             try {
-                pipeline(audioStream, decoder, input, (error) => pipelineDone(error));
+                pipeline(audioStream, decoder, fileStream, (error) => pipelineDone(error));
             } catch (error) {
                 onStreamError(error);
                 return;
@@ -154,13 +169,14 @@ module.exports = {
 
             audioStream.setMaxListeners(20);
             decoder.setMaxListeners(20);
+            fileStream.setMaxListeners(20);
 
-            session.activeStreams.set(userId, { audioStream, decoder, input });
+            session.activeStreams.set(userId, { audioStream, decoder, fileStream, userFilePath });
 
             audioStream.on("end", cleanup);
             audioStream.on("error", onStreamError);
             decoder.on("error", onStreamError);
-            ffmpeg.on("error", onStreamError);
+            fileStream.on("error", onStreamError);
 
             console.log(`✅ Audio stream created for ${userId}`);
         };
@@ -182,14 +198,15 @@ module.exports = {
 
         const meetingFilePath = session.meetingFilePath;
 
+        const closePromises = [];
         if (session.activeStreams) {
             for (const [userId, record] of Array.from(session.activeStreams.entries())) {
                 try {
                     if (record.audioStream && !record.audioStream.destroyed) {
                         record.audioStream.destroy();
                     }
-                    if (record.decoder && !record.decoder.destroyed) {
-                        record.decoder.destroy();
+                    if (record.fileStream && !record.fileStream.destroyed && !record.fileStream.writableEnded) {
+                        closePromises.push(new Promise((resolve) => record.fileStream.end(resolve)));
                     }
                 } catch (error) {
                     console.warn(`⚠️ Failed to destroy stream for ${userId}:`, error.message);
@@ -203,36 +220,17 @@ module.exports = {
             session.connection.receiver.speaking.off("start", session.speakingListener);
         }
 
-        if (session.meetingInput) {
-            session.meetingInput.end();
+        await Promise.all(closePromises);
+
+        if (session.meetingPath && session.meetingFilePath) {
+            await mixUserAudioFiles(session.meetingPath, session.meetingFilePath);
         }
 
-        if (session.meetingFfmpeg) {
-            await new Promise((resolve) => {
-                const done = () => {
-                    console.log("✅ FFmpeg stream closed.");
-                    resolve();
-                };
-
-                session.meetingFfmpeg.once("close", done);
-                session.meetingFfmpeg.once("exit", done);
-                session.meetingFfmpeg.once("error", done);
-
-                setTimeout(() => {
-                    if (session.meetingFfmpeg && !session.meetingFfmpeg.killed) {
-                        session.meetingFfmpeg.kill("SIGTERM");
-                    }
-                }, 2000);
-            });
-        }
-
-        session.meetingFfmpeg = null;
-        session.meetingInput = null;
         session.meetingFilePath = null;
         session.meetingPath = null;
         session.speakingListener = null;
 
         console.log("✅ Recorder stopped.");
         return meetingFilePath;
-    }
+    },
 };
