@@ -1,0 +1,23 @@
+[
+  {
+    "topic": "Recording and Transcription",
+    "question": "How to ensure accurate recording and transcription of user conversations?",
+    "answer": "To ensure accurate recording and transcription, it is suggested to record the conversation again to confirm the recording is working properly and to identify the user speaking at the same time, providing a transcript summary and using a voice note if available.",
+    "meetingId": "meeting_2026-07-30T20-48-06-594Z",
+    "timestamp": 1785444525592
+  },
+  {
+    "topic": "No Transcript Provided",
+    "question": "No meeting transcript was provided for extraction.",
+    "answer": "Please provide the meeting transcript to extract trading-related questions, answers, discussion points, setups, and insights.",
+    "meetingId": "meeting_2026-07-30T20-54-47-419Z",
+    "timestamp": 1785444906230
+  },
+  {
+    "topic": "No transcript provided",
+    "question": "No question available",
+    "answer": "No answer available",
+    "meetingId": "meeting_2026-07-30T20-56-49-055Z",
+    "timestamp": 1785445022478
+  }
+]

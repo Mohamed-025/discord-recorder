@@ -5,7 +5,12 @@ const recorder = require('../services/recorder');
 module.exports = {
     data: new SlashCommandBuilder()
         .setName('startrecord')
-        .setDescription('Start recording'),
+        .setDescription('Start recording')
+        .addChannelOption(option =>
+            option.setName('destination')
+                .setDescription('The text channel to send the outputs to')
+                .setRequired(false)
+        ),
 
     async execute(interaction) {
 
@@ -37,6 +42,10 @@ module.exports = {
 
         try {
             await recorder.start(session);
+            const dest = interaction.options.getChannel('destination');
+            if (dest) {
+                session.destinationChannelId = dest.id;
+            }
         } catch (error) {
             console.error(error);
             try {

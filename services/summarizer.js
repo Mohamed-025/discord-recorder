@@ -42,4 +42,4 @@ Rules:
 
 }
 
-module.exports = summarize;
+module.exports = summarize; 

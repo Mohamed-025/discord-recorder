@@ -39,20 +39,6 @@ module.exports = {
             return;
         }
 
-        const meetingFolder = session.meetingPath;
-
-        if (!meetingFolder) {
-            try {
-                await interaction.reply({
-                    content: "❌ No active meeting folder was found.",
-                    flags: ['Ephemeral'],
-                });
-            } catch (error) {
-                console.warn('Could not reply to stoprecord command:', error.message);
-            }
-            return;
-        }
-
         try {
             await interaction.deferReply({ flags: ['Ephemeral'] });
         } catch (error) {
@@ -66,44 +52,65 @@ module.exports = {
         }
 
         try {
+            const meetingFolder = await recorder.stop(session);
 
-            const meetingFile = await recorder.stop(session);
-
-            if (!meetingFile || !fs.existsSync(meetingFile)) {
-                throw new Error("Recording file was not created.");
+            if (!meetingFolder || !fs.existsSync(meetingFolder)) {
+                throw new Error("Recording was not generated properly.");
             }
 
-            console.log("Meeting file:", meetingFile);
+            console.log("Processing Meeting Folder:", meetingFolder);
 
-            const result = await meetingProcessor.process(meetingFile);
+            const result = await meetingProcessor.process(meetingFolder);
             const outputPaths = await meetingProcessor.saveOutputs(meetingFolder, result);
 
-            const fileName = path.basename(meetingFile);
+            const fileName = path.basename(meetingFolder);
             const transcriptPath = outputPaths.transcriptPath;
             const summaryPath = outputPaths.summaryPath;
-            const attachments = [meetingFile, transcriptPath, summaryPath].filter((file) => fs.existsSync(file));
+
+            const attachments = [transcriptPath, summaryPath].filter(f => fs.existsSync(f));
+            if (result.meetingFiles && Array.isArray(result.meetingFiles)) {
+                for (const mp3 of result.meetingFiles) {
+                    if (attachments.length < 10 && fs.existsSync(mp3)) attachments.push(mp3);
+                }
+            }
+
+            // Figure out where to send the final result
+            let targetChannel = interaction.channel;
+            if (session.destinationChannelId) {
+                try {
+                    const customChannel = await interaction.client.channels.fetch(session.destinationChannelId);
+                    if (customChannel) targetChannel = customChannel;
+                } catch (e) {
+                    console.warn("Could not fetch target channel ID, falling back to execution channel.");
+                }
+            }
+
+            const messagePayload = {
+                content: `<@${interaction.user.id}> ✅ Meeting processing completed for **${fileName}**.\n\n📄 Generated Q&A Database Entries: ${result.qaData?.length || 0}`,
+                files: attachments,
+            };
 
             try {
-                await interaction.editReply({
-                    content: `✅ Meeting processing completed.\n\n📄 Audio file: ${fileName}\n📄 Transcript: ${path.basename(transcriptPath)}\n📄 Summary: ${path.basename(summaryPath)}`,
-                    files: attachments,
-                });
+                // We just send directly to the channel to avoid interaction timeouts entirely
+                await targetChannel.send(messagePayload);
+                await interaction.editReply({ content: `✅ Processing finished. Check out the results in <#${targetChannel.id}>!` });
             } catch (error) {
-                console.warn('Could not send stoprecord completion reply:', error.message);
+                console.warn('Could not send final result to requested channel:', error.message);
+                await interaction.editReply({ content: `❌ Failed to upload results. File sizes may exceed limits.` });
             }
 
         } catch (error) {
-
             console.error(error);
-
             try {
                 await interaction.editReply({
                     content: `❌ ${error.message}`,
                 });
             } catch (replyError) {
                 console.warn('Could not send stoprecord error reply:', replyError.message);
+                try {
+                    await interaction.channel.send({ content: `<@${interaction.user.id}> ❌ ${error.message}` });
+                } catch (e) { }
             }
-
         }
 
     },

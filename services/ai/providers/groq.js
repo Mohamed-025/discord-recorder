@@ -16,6 +16,8 @@ module.exports = {
             file: fs.createReadStream(filePath),
             model: "whisper-large-v3-turbo",
             response_format: "verbose_json",
+            language: "ar",
+            prompt: "The following is a meeting transcript. The speakers are conversing in Arabic and English.",
         });
 
         return transcription;
