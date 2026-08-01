@@ -1,23 +1,84 @@
-[
-  {
-    "topic": "Recording and Transcription",
-    "question": "How to ensure accurate recording and transcription of user conversations?",
-    "answer": "To ensure accurate recording and transcription, it is suggested to record the conversation again to confirm the recording is working properly and to identify the user speaking at the same time, providing a transcript summary and using a voice note if available.",
-    "meetingId": "meeting_2026-07-30T20-48-06-594Z",
-    "timestamp": 1785444525592
-  },
-  {
-    "topic": "No Transcript Provided",
-    "question": "No meeting transcript was provided for extraction.",
-    "answer": "Please provide the meeting transcript to extract trading-related questions, answers, discussion points, setups, and insights.",
-    "meetingId": "meeting_2026-07-30T20-54-47-419Z",
-    "timestamp": 1785444906230
-  },
-  {
-    "topic": "No transcript provided",
-    "question": "No question available",
-    "answer": "No answer available",
-    "meetingId": "meeting_2026-07-30T20-56-49-055Z",
-    "timestamp": 1785445022478
-  }
-]
+{
+  "version": 1,
+  "meetings": [
+    {
+      "id": "meeting_2026-08-01T20-00-45-596Z",
+      "title": "meeting_2026-08-01T20-00-45-596Z",
+      "createdAt": "2026-08-01T20:01:49.095Z",
+      "transcriptFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-01T20-00-45-596Z\\transcript.txt",
+      "summaryFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-01T20-00-45-596Z\\summary.md"
+    }
+  ],
+  "qa": [
+    {
+      "id": "7365f726-e8d2-4fa7-b280-f90b14e8ce39",
+      "meetingId": "meeting_2026-08-01T20-00-45-596Z",
+      "createdAt": "2026-08-01T20:01:49.095Z",
+      "topic": "AI",
+      "subtopic": "Meeting Processing",
+      "title": "Recording and Transcription Pipeline",
+      "question": "What are the steps involved in processing a recorded meeting?",
+      "answer": "The steps involved in processing a recorded meeting include recording the audio, transcribing the audio to text using Whisper, summarizing the text into key points and Q&A, and finally storing the summary in a database.",
+      "keywords": [
+        "Whisper",
+        "Transcription",
+        "Summary",
+        "Q&A",
+        "Database"
+      ],
+      "importance": "high"
+    },
+    {
+      "id": "9d395877-ac11-4620-94a8-8492870f8902",
+      "meetingId": "meeting_2026-08-01T20-00-45-596Z",
+      "createdAt": "2026-08-01T20:01:49.095Z",
+      "topic": "AI",
+      "subtopic": "Workflow",
+      "title": "AI Workflow",
+      "question": "How does the AI workflow process a recorded meeting?",
+      "answer": "The AI workflow processes a recorded meeting by first transcribing the audio to text, then summarizing the text into key points and Q&A, and finally storing the summary in a database for future reference.",
+      "keywords": [
+        "AI",
+        "Workflow",
+        "Transcription",
+        "Summary",
+        "Database"
+      ],
+      "importance": "high"
+    },
+    {
+      "id": "04848045-a506-443e-8796-49b5d792dc69",
+      "meetingId": "meeting_2026-08-01T20-00-45-596Z",
+      "createdAt": "2026-08-01T20:01:49.095Z",
+      "topic": "Software",
+      "subtopic": "Whisper",
+      "title": "Whisper Transcription",
+      "question": "What is Whisper used for in the meeting processing pipeline?",
+      "answer": "Whisper is used to transcribe the recorded audio into text.",
+      "keywords": [
+        "Whisper",
+        "Transcription",
+        "Audio",
+        "Text"
+      ],
+      "importance": "medium"
+    },
+    {
+      "id": "22365eda-149c-4270-841e-dcddf60a94c0",
+      "meetingId": "meeting_2026-08-01T20-00-45-596Z",
+      "createdAt": "2026-08-01T20:01:49.095Z",
+      "topic": "Database",
+      "subtopic": "Storage",
+      "title": "Database Storage",
+      "question": "Where is the final summary stored after processing a recorded meeting?",
+      "answer": "The final summary is stored in a database for future reference.",
+      "keywords": [
+        "Database",
+        "Storage",
+        "Summary",
+        "Meeting"
+      ],
+      "importance": "medium"
+    }
+  ]
+}

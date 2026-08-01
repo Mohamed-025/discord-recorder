@@ -27,6 +27,8 @@ class SlidingWindowMixer {
         this.windowMs = 10000; // 10-second buffer
         this.bufferSize = Math.floor(this.windowMs * this.bytesPerMs);
         this.buffer = Buffer.alloc(this.bufferSize, 0);
+        this.flushCount = 0;
+        this.latestWriteTimeMs = 0;
 
         // headTimeMs = the earliest timestamp currently represented in the buffer
         this.headTimeMs = 0;
@@ -36,8 +38,8 @@ class SlidingWindowMixer {
         this.lateToleranceMs = 500;
 
         // Flush interval & delay
-        this.flushDelayMs = 3000; // Only flush data older than 3 seconds
-        this.interval = setInterval(() => this._autoFlush(), 500);
+        this.flushDelayMs = 1000; // Only flush data older than 3 seconds
+        this.interval = setInterval(() => this._autoFlush(), 40);
     }
 
     /**
@@ -64,6 +66,10 @@ class SlidingWindowMixer {
         const byteOffset = Math.floor(offsetMs * this.bytesPerMs);
         // Ensure byte offset is even (Int16 alignment)
         const alignedOffset = byteOffset - (byteOffset % 2);
+
+        const frameCount = chunk.length / (this.channels * this.bytesPerSample);
+        const chunkEndTimeMs = timeMs + (frameCount / this.sampleRate) * 1000;
+        this.latestWriteTimeMs = Math.max(this.latestWriteTimeMs, chunkEndTimeMs);
 
         // Additive mix with hard clamp
         for (let i = 0; i < chunk.length - 1; i += 2) {
@@ -130,6 +136,7 @@ class SlidingWindowMixer {
         this.buffer.copy(chunk, 0, 0, aligned);
 
         this._writeToOutput(chunk);
+        this.flushCount += 1;
 
         // Shift remaining data left
         this.buffer.copy(this.buffer, 0, aligned);
@@ -152,6 +159,14 @@ class SlidingWindowMixer {
         }
     }
 
+    getBufferedTimeMs() {
+        return Math.max(0, this.latestWriteTimeMs - this.headTimeMs);
+    }
+
+    getFlushCount() {
+        return this.flushCount;
+    }
+
     /**
      * Close the mixer: flush all remaining buffered audio, then end the output stream.
      */
@@ -164,22 +179,19 @@ class SlidingWindowMixer {
             this.interval = null;
         }
 
-        // Flush everything remaining up to "now"
-        const currentElapsed = Date.now() - this.startTime;
-        const remainingMs = Math.max(0, currentElapsed - this.headTimeMs);
+        const bufferedMs = Math.max(0, this.latestWriteTimeMs - this.headTimeMs);
+        const bytesToFlush = Math.min(
+            Math.floor(bufferedMs * this.bytesPerMs),
+            this.bufferSize
+        );
 
-        if (remainingMs > 0) {
-            const bytesToFlush = Math.min(
-                Math.floor(remainingMs * this.bytesPerMs),
-                this.bufferSize
-            );
-            if (bytesToFlush > 0) {
-                const aligned = bytesToFlush - (bytesToFlush % 2);
-                if (aligned > 0) {
-                    const finalChunk = Buffer.allocUnsafe(aligned);
-                    this.buffer.copy(finalChunk, 0, 0, aligned);
-                    this._writeToOutput(finalChunk);
-                }
+        if (bytesToFlush > 0) {
+            const aligned = bytesToFlush - (bytesToFlush % 2);
+            if (aligned > 0) {
+                const finalChunk = Buffer.allocUnsafe(aligned);
+                this.buffer.copy(finalChunk, 0, 0, aligned);
+                this._writeToOutput(finalChunk);
+                this.flushCount += 1;
             }
         }
 

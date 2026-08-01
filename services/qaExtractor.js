@@ -2,30 +2,225 @@ const ai = require("./ai");
 
 async function extractQA(transcript) {
     const systemPrompt = `
-You are an expert Q&A data extractor for a technical trading team.
+You are an expert Knowledge Extraction Engine for a professional trading team.
 
-Based on the meeting transcript provided, extract ALL trading-related questions, answers, discussion points, setups, and insights.
-Identify the overarching core Topic for each Q&A pair (e.g. "Risk Management", "Trading Platforms", "Entry Strategies", "Psychology").
+Your task is to convert the meeting transcript into reusable knowledge.
 
-You MUST return the data in a raw JSON array format matching this exact schema:
+The extracted knowledge will be stored in a searchable knowledge database used by an AI assistant.
+
+Extract every important reusable idea from the transcript.
+
+Knowledge includes:
+
+- Trading rules
+- Best practices
+- Lessons learned
+- Mistakes
+- Technical explanations
+- Strategies
+- Indicators
+- Platform usage
+- Software architecture
+- AI workflows
+- Programming concepts
+- Procedures
+- Definitions
+- Decision making
+- Technical observations
+
+Do NOT summarize the meeting.
+
+Instead, convert knowledge into reusable Question & Answer entries.
+
+--------------------------------------------
+
+Return ONLY a JSON array.
+
+Each object MUST have this exact schema:
+
 [
   {
-    "topic": "The Topic Headline",
-    "question": "The question, issue, or concept discussed?",
-    "answer": "The comprehensive answer or conclusion from the transcript."
+    "topic": "...",
+
+    "subtopic": "...",
+
+    "title": "...",
+
+    "question": "...",
+
+    "answer": "...",
+
+    "keywords": [
+      "...",
+      "...",
+      "..."
+    ],
+
+    "importance": "high"
   }
 ]
 
-CRITICAL: Return ONLY valid JSON array. No markdown backticks, no explanations, no text before or after the array.
-Do not hallucinate data. Keep technical formatting intact.
+--------------------------------------------
+
+Field descriptions
+
+topic
+
+Large category.
+
+Examples:
+
+Trading
+
+Discord Recorder
+
+AI
+
+Database
+
+JavaScript
+
+Node.js
+
+Risk Management
+
+--------------------------------------------
+
+subtopic
+
+Smaller category.
+
+Examples:
+
+EMA
+
+VWAP
+
+Meeting Processing
+
+Prompt Engineering
+
+FFmpeg
+
+Whisper
+
+JSON
+
+--------------------------------------------
+
+title
+
+Very short title describing the knowledge.
+
+Examples:
+
+Sliding Window Mixer
+
+Meeting Processing Pipeline
+
+EMA Crossovers
+
+Prompt Workflow
+
+--------------------------------------------
+
+question
+
+A real question another person may ask.
+
+Examples:
+
+What happens after recording stops?
+
+Why is Sliding Window Mixer used?
+
+How is the transcript processed?
+
+--------------------------------------------
+
+answer
+
+Answer the question as reusable knowledge.
+
+Never mention:
+
+the meeting
+
+the speaker
+
+someone said
+
+the discussion
+
+Always write factual reusable knowledge.
+
+--------------------------------------------
+
+keywords
+
+Generate 3–8 keywords.
+
+Include:
+
+technical terms
+
+indicator names
+
+library names
+
+API names
+
+search words
+
+--------------------------------------------
+
+importance
+
+Use one of:
+
+high
+
+medium
+
+low
+
+--------------------------------------------
+
+Rules
+
+Never invent facts.
+
+Never summarize the meeting.
+
+Never describe who said something.
+
+Never mention participants.
+
+Never mention "the speaker".
+
+Never output markdown.
+
+Never output explanations.
+
+Output ONLY the JSON array.
 `;
 
     const response = await ai.chat(systemPrompt, transcript);
     try {
-        const strictJson = response.replace(/```json/gi, "").replace(/```/g, "").trim();
+        let strictJson = response.replace(/```json/gi, "").replace(/```/g, "").trim();
+
+        if (!strictJson.startsWith("[")) {
+            const firstIndex = strictJson.indexOf("[");
+            const lastIndex = strictJson.lastIndexOf("]");
+            if (firstIndex !== -1 && lastIndex > firstIndex) {
+                strictJson = strictJson.slice(firstIndex, lastIndex + 1).trim();
+            }
+        }
+
         return JSON.parse(strictJson);
     } catch (e) {
-        console.error("QA JSON parse error:", e.message);
+        const preview = String(response).slice(0, 400).replace(/\s+/g, " ");
+        console.error("QA JSON parse error:", e.message, "response preview:", preview);
         return [];
     }
 }

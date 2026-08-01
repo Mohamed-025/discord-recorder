@@ -41,14 +41,10 @@ module.exports = {
 
         try {
             await interaction.deferReply({ flags: ['Ephemeral'] });
-        } catch (error) {
-            console.warn('Could not defer stoprecord reply:', error.message);
-        }
-
-        try {
             await interaction.editReply({ content: "⏳ Processing meeting..." });
         } catch (error) {
-            console.warn('Could not update stoprecord reply:', error.message);
+            console.warn('Could not defer or edit stoprecord reply:', error.message);
+            // If defer fails, continue and send a normal reply later.
         }
 
         try {
@@ -93,18 +89,28 @@ module.exports = {
             try {
                 // We just send directly to the channel to avoid interaction timeouts entirely
                 await targetChannel.send(messagePayload);
-                await interaction.editReply({ content: `✅ Processing finished. Check out the results in <#${targetChannel.id}>!` });
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply({ content: `✅ Processing finished. Check out the results in <#${targetChannel.id}>!` });
+                } else {
+                    await interaction.reply({ content: `✅ Processing finished. Check out the results in <#${targetChannel.id}>!`, ephemeral: true });
+                }
             } catch (error) {
                 console.warn('Could not send final result to requested channel:', error.message);
-                await interaction.editReply({ content: `❌ Failed to upload results. File sizes may exceed limits.` });
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply({ content: `❌ Failed to upload results. File sizes may exceed limits.` });
+                } else {
+                    await interaction.reply({ content: `❌ Failed to upload results. File sizes may exceed limits.`, ephemeral: true });
+                }
             }
 
         } catch (error) {
             console.error(error);
             try {
-                await interaction.editReply({
-                    content: `❌ ${error.message}`,
-                });
+                if (interaction.deferred || interaction.replied) {
+                    await interaction.editReply({ content: `❌ ${error.message}` });
+                } else {
+                    await interaction.reply({ content: `❌ ${error.message}`, ephemeral: true });
+                }
             } catch (replyError) {
                 console.warn('Could not send stoprecord error reply:', replyError.message);
                 try {

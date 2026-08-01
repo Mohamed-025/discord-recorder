@@ -1,29 +1,388 @@
-const { spawn } = require("child_process");
+﻿const { spawn } = require("child_process");
 const { EndBehaviorType } = require("@discordjs/voice");
 const fs = require("fs");
 const path = require("path");
-const ffmpegPath = require("ffmpeg-static");
 const prism = require("prism-media");
 const SlidingWindowMixer = require("./mixer");
+const ffmpegPath = require("ffmpeg-static");
 
-function createMeetingDir() {
-    const meetingFolder = `meeting_${new Date().toISOString().replace(/[:.]/g, "-")}`;
-    const meetingPath = path.join(__dirname, "..", "recordings", meetingFolder);
-    fs.mkdirSync(meetingPath, { recursive: true });
-    return { meetingFolder, meetingPath };
-}
+const SAMPLE_RATE = 48000;
+const CHANNELS = 2;
+const SILENCE_END_MS = 1200;
+const AUDIO_DEBUG = process.env.DEBUG_AUDIO === "true";
 
 function logEvent(session, message, details = {}) {
-    const sessionId = session?.recordingSessionId || session?.currentRecordingSessionId || "n/a";
+    const sessionId = session?.recordingSessionId || "n/a";
     console.log(`[recorder:${sessionId}] ${message}`, details);
 }
 
 function logError(session, message, error, details = {}) {
-    const sessionId = session?.recordingSessionId || session?.currentRecordingSessionId || "n/a";
+    const sessionId = session?.recordingSessionId || "n/a";
     console.error(`[recorder:${sessionId}] ${message}`, {
         error: error?.message || String(error),
         ...details,
     });
+}
+
+function audioLog(session, message, details = {}) {
+    if (!AUDIO_DEBUG) return;
+    const sessionId = session?.recordingSessionId || "n/a";
+    console.log(`[audio:${sessionId}] ${message}`, details);
+}
+
+function ensureDirectory(directoryPath) {
+    if (!fs.existsSync(directoryPath)) {
+        fs.mkdirSync(directoryPath, { recursive: true });
+        return;
+    }
+
+    if (!fs.statSync(directoryPath).isDirectory()) {
+        throw new Error(`Expected a directory but found a file: ${directoryPath}`);
+    }
+}
+
+function createMeetingFolder() {
+    const meetingFolder = `meeting_${new Date().toISOString().replace(/[:.]/g, "-")}`;
+    const meetingPath = path.join(__dirname, "..", "recordings", meetingFolder);
+    ensureDirectory(meetingPath);
+    return { meetingFolder, meetingPath };
+}
+
+function createFfmpegRecorder(outputFilePath) {
+    const args = [
+        "-y",
+        "-f",
+        "s16le",
+        "-ar",
+        String(SAMPLE_RATE),
+        "-ac",
+        String(CHANNELS),
+        "-i",
+        "pipe:0",
+        "-vn",
+        "-codec:a",
+        "libmp3lame",
+        "-b:a",
+        "128k",
+        outputFilePath,
+    ];
+
+    const ffmpeg = spawn(ffmpegPath, args, { stdio: ["pipe", "ignore", "pipe"] });
+    let stderr = "";
+
+    ffmpeg.stderr.on("data", (chunk) => {
+        stderr += chunk.toString();
+    });
+
+    const exitPromise = new Promise((resolve, reject) => {
+        ffmpeg.once("error", (error) => {
+            reject(new Error(`FFmpeg failed to start: ${error.message}`));
+        });
+
+        ffmpeg.once("close", (code) => {
+            if (code !== 0) {
+                reject(new Error(`FFmpeg exited with code ${code}: ${stderr.trim()}`));
+                return;
+            }
+            resolve();
+        });
+    });
+
+    return { ffmpeg, exitPromise };
+}
+
+function waitForFileReady(filePath, timeoutMs = 10000, intervalMs = 250) {
+    return new Promise((resolve, reject) => {
+        const deadline = Date.now() + timeoutMs;
+
+        const check = () => {
+            try {
+                if (fs.existsSync(filePath)) {
+                    const stats = fs.statSync(filePath);
+                    if (stats.size > 0) {
+                        fs.accessSync(filePath, fs.constants.R_OK);
+                        resolve(filePath);
+                        return;
+                    }
+                }
+            } catch (_) {
+                // Retry until deadline.
+            }
+
+            if (Date.now() >= deadline) {
+                reject(new Error(`Audio file was not ready in time: ${filePath}`));
+                return;
+            }
+
+            setTimeout(check, intervalMs);
+        };
+
+        check();
+    });
+}
+
+async function getAudioDuration(filePath) {
+    const ffprobeExecutable = process.platform === "win32" ? "ffprobe.exe" : "ffprobe";
+    const ffprobeCandidates = [
+        path.join(path.dirname(ffmpegPath), ffprobeExecutable),
+        ffprobeExecutable,
+    ];
+
+    let ffprobePath = null;
+    for (const candidate of ffprobeCandidates) {
+        if (candidate === ffprobeExecutable) {
+            ffprobePath = candidate;
+            break;
+        }
+        if (fs.existsSync(candidate)) {
+            ffprobePath = candidate;
+            break;
+        }
+    }
+
+    const fallbackDuration = () => {
+        try {
+            const stats = fs.statSync(filePath);
+            if (!stats || stats.size <= 0) {
+                return 0;
+            }
+            // approximate MP3 duration with 128kbps bitrate
+            return Number((stats.size * 8) / (128 * 1000));
+        } catch (_error) {
+            return 0;
+        }
+    };
+
+    if (!ffprobePath) {
+        return fallbackDuration();
+    }
+
+    const ffprobe = spawn(
+        ffprobePath,
+        [
+            "-v",
+            "error",
+            "-show_entries",
+            "format=duration",
+            "-of",
+            "default=noprint_wrappers=1:nokey=1",
+            filePath,
+        ],
+        { stdio: ["ignore", "pipe", "pipe"] }
+    );
+
+    return new Promise((resolve) => {
+        let output = "";
+        ffprobe.stdout.on("data", (chunk) => {
+            output += chunk.toString();
+        });
+        ffprobe.stderr.on("data", () => { });
+        ffprobe.once("close", () => {
+            const duration = Number(output.trim());
+            resolve(Number.isFinite(duration) ? duration : fallbackDuration());
+        });
+        ffprobe.once("error", () => resolve(fallbackDuration()));
+    });
+}
+
+function createUserRecorder(session, receiver, mixer, userId) {
+    const existing = session.activeUsers.get(userId);
+    if (existing && existing.state === "active") {
+        return existing;
+    }
+
+    const userState = {
+        userId,
+        cleanup: () => { },
+        finished: Promise.resolve(),
+        state: "initializing",
+    };
+    session.activeUsers.set(userId, userState);
+    audioLog(session, "stream subscribed", { userId, activeUsers: session.activeUsers.size });
+    let opusStream;
+    try {
+        opusStream = receiver.subscribe(userId, {
+            end: {
+                behavior: EndBehaviorType.AfterSilence,
+                duration: SILENCE_END_MS,
+            },
+        });
+    } catch (error) {
+        audioLog(session, "user subscribe failed", { userId, error: error?.message });
+        session.activeUsers.delete(userId);
+        throw error;
+    }
+
+    const decoder = new prism.opus.Decoder({
+        rate: SAMPLE_RATE,
+        channels: CHANNELS,
+        frameSize: 960,
+    });
+
+    ensureDirectory(session.meetingPath);
+
+    let finished = false;
+    let resolveCompletion;
+    const completion = new Promise((resolve) => {
+        resolveCompletion = resolve;
+    });
+
+    userState.firstPcmLogged = false;
+    let firstChunkElapsedMs = null;
+    let sampleOffset = 0;
+
+    const onOpusData = (chunk) => {
+        if (decoder.destroyed) {
+            return;
+        }
+        if (!userState.firstPcmLogged) {
+            userState.firstPcmLogged = true;
+            audioLog(session, "first PCM received", { userId, elapsedMs: Date.now() - session.recordingStartTime });
+        }
+        try {
+            decoder.write(chunk);
+        } catch (error) {
+            onStreamError(error);
+        }
+    };
+
+    const onDecoderData = (chunk) => {
+        if (chunk.length === 0) {
+            return;
+        }
+
+        if (firstChunkElapsedMs === null) {
+            firstChunkElapsedMs = Date.now() - session.recordingStartTime;
+        }
+
+        const frameCount = chunk.length / (CHANNELS * 2);
+        const elapsedMs = firstChunkElapsedMs + (sampleOffset / SAMPLE_RATE) * 1000;
+        sampleOffset += frameCount;
+
+        try {
+            mixer.writeChunk(elapsedMs, chunk);
+            audioLog(session, "mixer write", { userId, elapsedMs, byteLength: chunk.length, frameCount });
+        } catch (error) {
+            onStreamError(error);
+        }
+    };
+
+    const onDecoderError = (error) => {
+        audioLog(session, "decoder error", { userId, error: error?.message });
+        logError(session, "Decoder error", error, { userId });
+        cleanup();
+    };
+
+    const onDecoderEnd = () => {
+        decoderEnded = true;
+        audioLog(session, "decoder ended", { userId, elapsedMs: Date.now() - session.recordingStartTime });
+        if (userState.state === "stopping") {
+            finalizeCleanup();
+        }
+    };
+
+    const onStreamError = (error) => {
+        audioLog(session, "stream error", { userId, code: error?.code, message: error?.message });
+        if (error?.code === "ERR_STREAM_DESTROYED" || error?.code === "ERR_STREAM_PREMATURE_CLOSE") {
+            cleanup();
+            return;
+        }
+        logError(session, "User stream error", error, { userId });
+        cleanup();
+    };
+
+    let streamEnded = false;
+    let decoderEnded = false;
+
+    const finalizeCleanup = () => {
+        if (finished) {
+            if (resolveCompletion) resolveCompletion();
+            return;
+        }
+        finished = true;
+        userState.state = "done";
+
+        try {
+            decoder.off("data", onDecoderData);
+            decoder.off("error", onDecoderError);
+            decoder.off("end", onDecoderEnd);
+        } catch (error) {
+            logError(session, "Failed to remove decoder listeners", error, { userId });
+        }
+
+        try {
+            if (!decoder.destroyed) {
+                decoder.destroy();
+            }
+        } catch (error) {
+            logError(session, "Failed to destroy decoder", error, { userId });
+        }
+
+        audioLog(session, "stream destroyed", { userId, bufferedMs: mixer.getBufferedTimeMs?.(), activeUsers: session.activeUsers.size });
+        session.activeUsers.delete(userId);
+        if (resolveCompletion) resolveCompletion();
+    };
+
+    const cleanup = () => {
+        if (userState.state === "stopping" || userState.state === "done") {
+            return;
+        }
+        userState.state = "stopping";
+
+        audioLog(session, "cleanup requested", { userId, bufferedMs: mixer.getBufferedTimeMs?.(), activeUsers: session.activeUsers.size });
+
+        try {
+            opusStream.off("data", onOpusData);
+            opusStream.off("end", onOpusEnd);
+            opusStream.off("error", onStreamError);
+        } catch (error) {
+            logError(session, "Failed to remove voice listeners", error, { userId });
+        }
+
+        try {
+            if (!opusStream.destroyed) {
+                opusStream.destroy();
+            }
+        } catch (error) {
+            logError(session, "Failed to destroy opus stream", error, { userId });
+        }
+
+        if (!decoder.destroyed && !decoder.writableEnded) {
+            audioLog(session, "decoder end requested", { userId });
+            try {
+                decoder.end();
+            } catch (error) {
+                logError(session, "Failed to end decoder", error, { userId });
+            }
+        }
+
+        if (decoderEnded) {
+            finalizeCleanup();
+        }
+    };
+
+    const onOpusEnd = () => {
+        if (streamEnded) return;
+        streamEnded = true;
+        audioLog(session, "opus stream ended", { userId, elapsedMs: Date.now() - session.recordingStartTime });
+        cleanup();
+    };
+
+    opusStream.on("data", onOpusData);
+    opusStream.on("end", onOpusEnd);
+    opusStream.on("error", onStreamError);
+
+    decoder.on("data", onDecoderData);
+    decoder.on("error", onDecoderError);
+    decoder.on("end", onDecoderEnd);
+
+    userState.cleanup = cleanup;
+    userState.finished = completion;
+    userState.state = "active";
+
+    logEvent(session, "User subscribed", { userId });
+
+    return session.activeUsers.get(userId);
 }
 
 module.exports = {
@@ -32,7 +391,7 @@ module.exports = {
             return { ok: true, alreadyRecording: true };
         }
 
-        if (session.activeStreams && session.activeStreams.size > 0) {
+        if (session.activeUsers && session.activeUsers.size > 0) {
             await this.stop(session);
         }
 
@@ -41,176 +400,52 @@ module.exports = {
             throw new Error("Voice receiver is not ready. Make sure the bot is connected to a voice channel and the connection has finished setting up.");
         }
 
-        const { meetingPath } = createMeetingDir();
+        const { meetingPath } = createMeetingFolder();
         const meetingTimestamp = new Date().toISOString().replace(/[:.]/g, "-").replace("T", "_");
+        const meetingFileName = `meeting_${meetingTimestamp}.mp3`;
+        const meetingFilePath = path.join(meetingPath, meetingFileName);
+
+        const { ffmpeg, exitPromise } = createFfmpegRecorder(meetingFilePath);
+        const mixer = new SlidingWindowMixer(ffmpeg.stdin, Date.now());
 
         session.recording = true;
         session.isStopping = false;
-        session.sessionStartTime = Date.now();
+        session.recordingStartTime = Date.now();
         session.recordingSessionId = `${Date.now()}`;
-        session.currentRecordingSessionId = session.recordingSessionId;
         session.meetingPath = meetingPath;
-        session.activeStreams = new Map();
+        session.meetingFilePath = meetingFilePath;
+        session.activeUsers = new Map();
         session.speakingListener = null;
-
-        logEvent(session, "Recorder started", { meetingPath });
-
-        // FFmpeg: read raw PCM from stdin, encode into segmented MP3 files (30 min each)
-        const ffmpegArgs = [
-            "-y",
-            "-f", "s16le", "-ar", "48000", "-ac", "2", "-i", "pipe:0",
-            "-f", "segment", "-segment_time", "1800",
-            "-c:a", "libmp3lame", "-b:a", "48k",
-            path.join(meetingPath, `meeting_${meetingTimestamp}_%03d.mp3`)
-        ];
-
-        const ffmpeg = spawn(ffmpegPath, ffmpegArgs, { stdio: ["pipe", "ignore", "pipe"] });
-
-        let ffmpegStderr = "";
-        ffmpeg.stderr.on("data", (data) => {
-            ffmpegStderr += data.toString();
-        });
-
-        ffmpeg.on("error", (error) => {
-            logError(session, "FFmpeg process error", error);
-        });
-
-        ffmpeg.on("close", (code) => {
-            if (code !== 0 && !session.isStopping) {
-                logError(session, "FFmpeg exited unexpectedly", new Error(ffmpegStderr.slice(-500)), { code });
-            }
-        });
-
-        const mixer = new SlidingWindowMixer(ffmpeg.stdin, session.sessionStartTime);
-        session.ffmpeg = ffmpeg;
         session.mixer = mixer;
+        session.ffmpegProcess = ffmpeg;
+        session.ffmpegExitPromise = exitPromise;
 
-        // ─── Speaking Handler ───────────────────────────────────────────
+        logEvent(session, "Recorder started", { meetingPath, meetingFilePath });
+
         const handleSpeakingStart = (userId) => {
-            if (!session.recording || session.recordingSessionId !== session.currentRecordingSessionId) {
-                return;
-            }
-
-            // Already tracking this user — don't double-subscribe
-            if (session.activeStreams.has(userId)) {
-                return;
-            }
-
-            const audioStream = receiver.subscribe(userId, {
-                end: {
-                    behavior: EndBehaviorType.AfterSilence,
-                    duration: 2000, // Wait 2 seconds of silence before ending (was 1s — too aggressive)
-                },
-            });
-
-            const decoder = new prism.opus.Decoder({
-                rate: 48000,
-                channels: 2,
-                frameSize: 960,
-            });
-
-            let resolveCompletion;
-            const completion = new Promise((resolve) => {
-                resolveCompletion = resolve;
-            });
-
-            // ── Per-user record object ──
-            const record = {
+            audioLog(session, "speaking start", {
                 userId,
-                audioStream,
-                decoder,
-                completion,
-                closed: false,
-                cleanup() {
-                    if (this.closed) return;
-                    this.closed = true;
-                    session.activeStreams.delete(userId);
+                elapsedMs: Date.now() - session.recordingStartTime,
+                alreadyExists: session.activeUsers.has(userId),
+                activeUsers: session.activeUsers.size,
+            });
 
-                    // Detach all listeners to prevent memory leaks
-                    try {
-                        audioStream.removeAllListeners();
-                    } catch (_) { }
+            if (!session.recording) return;
 
-                    try {
-                        decoder.removeAllListeners();
-                    } catch (_) { }
-
-                    try {
-                        if (!decoder.destroyed) decoder.end();
-                    } catch (_) { }
-
-                    resolveCompletion();
-                },
-            };
-
-            // ── Error handler ──
-            const onStreamError = (error) => {
-                if (
-                    error?.code === "ERR_STREAM_DESTROYED" ||
-                    error?.code === "ERR_STREAM_PREMATURE_CLOSE" ||
-                    error?.code === "ABORT_ERR"
-                ) {
-                    record.cleanup();
-                    return;
-                }
-                record.cleanup();
-                if (!session.isStopping) {
-                    logError(session, "Stream error", error, { userId });
-                }
-            };
-
-            // Bail early if stream is already dead
-            if (!audioStream.readable || audioStream.destroyed) {
-                record.cleanup();
+            if (session.activeUsers.has(userId)) {
+                audioLog(session, "speaking start ignored duplicate", { userId });
                 return;
             }
 
-            // ── Decoder data: mix into the shared buffer ──
-            const onDecoderData = (chunk) => {
-                if (!session.recording || session.recordingSessionId !== session.currentRecordingSessionId) {
-                    return;
-                }
-                try {
-                    session.mixer.writeChunk(Date.now() - session.sessionStartTime, chunk);
-                } catch (error) {
-                    onStreamError(error);
-                }
-            };
+            audioLog(session, "speaking start creating user", { userId });
 
-            // ── When user stops speaking ──
-            const onAudioEnd = () => {
-                record.cleanup();
-            };
-
-            // Wire up the pipeline: audioStream → decoder → mixer
-            audioStream.on("data", (opusPacket) => {
-                if (!decoder.destroyed) {
-                    decoder.write(opusPacket);
-                }
-            });
-
-            audioStream.on("end", () => {
-                // Flush any buffered decoder data, then clean up
-                if (!decoder.destroyed) {
-                    decoder.end();
-                }
-                onAudioEnd();
-            });
-
-            audioStream.on("error", onStreamError);
-
-            decoder.on("data", onDecoderData);
-            decoder.on("error", onStreamError);
-            decoder.on("end", onAudioEnd);
-
-            session.activeStreams.set(userId, record);
-            logEvent(session, "User subscribed", { userId });
+            createUserRecorder(session, receiver, mixer, userId);
         };
 
         session.speakingListener = handleSpeakingStart;
         receiver.speaking.on("start", handleSpeakingStart);
 
-        return { ok: true, meetingPath };
+        return { ok: true, meetingPath, meetingFilePath };
     },
 
     async stop(session) {
@@ -220,60 +455,63 @@ module.exports = {
 
         session.recording = false;
         session.isStopping = true;
-        session.currentRecordingSessionId = null;
 
         const meetingPath = session.meetingPath;
+        const meetingFilePath = session.meetingFilePath;
 
-        logEvent(session, "Recorder stopping", { meetingPath });
+        logEvent(session, "Recorder stopping", { meetingPath, meetingFilePath });
 
-        // Detach the speaking listener first to stop new subscriptions
         if (session.connection?.receiver?.speaking && session.speakingListener) {
             session.connection.receiver.speaking.off("start", session.speakingListener);
+            session.speakingListener = null;
         }
 
-        // Clean up all active streams
-        const records = Array.from(session.activeStreams.values());
-        session.activeStreams.clear();
+        const userStates = Array.from(session.activeUsers.values());
 
-        for (const record of records) {
+        for (const userState of userStates) {
             try {
-                record.cleanup();
+                userState.cleanup();
             } catch (error) {
-                logError(session, "Failed to stop recording stream", error, { userId: record.userId });
+                logError(session, "Failed to cleanup user recorder", error, { userId: userState.userId });
             }
         }
 
-        await Promise.all(records.map((r) => r.completion));
+        await Promise.all(userStates.map((userState) => userState.finished.catch(() => { })));
+        session.activeUsers.clear();
 
-        // Close mixer (flushes remaining audio, then ends FFmpeg stdin)
         if (session.mixer) {
-            try {
-                session.mixer.close();
-            } catch (e) {
-                logError(session, "Mixer close error", e);
-            }
-            session.mixer = null;
+            session.mixer.close();
         }
 
-        // Wait for FFmpeg to finish encoding
-        if (session.ffmpeg) {
-            await new Promise((resolve) => {
-                session.ffmpeg.once("close", resolve);
-                // Safety timeout: if FFmpeg hangs, kill it after 10 seconds
-                setTimeout(() => {
-                    try { session.ffmpeg.kill("SIGKILL"); } catch (_) { }
-                    resolve();
-                }, 10000);
-            });
-            session.ffmpeg = null;
+        if (session.ffmpegExitPromise) {
+            await session.ffmpegExitPromise;
         }
 
+        if (!meetingPath || !meetingFilePath) {
+            throw new Error("Recording session was not initialized correctly.");
+        }
+
+        await waitForFileReady(meetingFilePath);
+
+        const stats = fs.statSync(meetingFilePath);
+        if (stats.size === 0) {
+            throw new Error("FFmpeg produced an empty recording file.");
+        }
+
+        const duration = await getAudioDuration(meetingFilePath);
+        logEvent(session, "Recording finished", { meetingFilePath, sizeBytes: stats.size, durationSeconds: duration });
+
+        session.recording = false;
+        session.isStopping = false;
+        session.recordingSessionId = null;
+        session.recordingStartTime = null;
         session.meetingPath = null;
-        session.speakingListener = null;
-        session.activeStreams = new Map();
+        session.meetingFilePath = null;
+        session.mixer = null;
+        session.ffmpegProcess = null;
+        session.ffmpegExitPromise = null;
 
-        logEvent(session, "Cleanup finished", { meetingPath });
-        console.log("✅ Recorder stopped.");
+        logEvent(session, "Recorder stopped", { meetingPath });
         return meetingPath;
     },
 };

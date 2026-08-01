@@ -5,13 +5,14 @@ const cleanTranscript = require("./cleanTranscript");
 const summarize = require("./summarizer");
 const extractQA = require("./qaExtractor");
 
+const crypto = require("crypto");
+
 const MAX_TRANSCRIPT_CHARS = 18000;
 
 function splitTranscript(text, maxChars = MAX_TRANSCRIPT_CHARS) {
     if (text.length <= maxChars) {
         return [text];
     }
-
     const parts = [];
     let current = "";
     for (const paragraph of text.split(/\n\n+/)) {
@@ -29,8 +30,54 @@ function splitTranscript(text, maxChars = MAX_TRANSCRIPT_CHARS) {
 }
 
 function addSpeakerLabels(text) {
-    // Labels are generic since voices are mixed
-    return text;
+    if (!text || !text.trim()) {
+        return text;
+    }
+
+    return text
+        .split(/\n\n+/)
+        .map((paragraph) => {
+            const trimmed = paragraph.trim();
+            if (!trimmed) return "";
+            return `Speaker: ${trimmed}`;
+        })
+        .filter(Boolean)
+        .join("\n\n");
+}
+
+function resolveMp3Files(meetingFolder) {
+    const normalized = String(meetingFolder || "").trim();
+    if (!normalized) {
+        throw new Error("Meeting folder path is required.");
+    }
+
+    if (normalized.toLowerCase().endsWith(".mp3")) {
+        return [normalized];
+    }
+
+    const resolvedPath = path.resolve(normalized);
+    if (!fs.existsSync(resolvedPath)) {
+        throw new Error(`Meeting folder does not exist: ${resolvedPath}`);
+    }
+
+    const stats = fs.statSync(resolvedPath);
+    if (stats.isFile()) {
+        if (!resolvedPath.toLowerCase().endsWith(".mp3")) {
+            throw new Error("Meeting file must be an .mp3 file.");
+        }
+        return [resolvedPath];
+    }
+
+    const files = fs.readdirSync(resolvedPath)
+        .filter((f) => f.toLowerCase().endsWith(".mp3"))
+        .sort()
+        .map((f) => path.join(resolvedPath, f));
+
+    if (!files.length) {
+        throw new Error(`No .mp3 files found in directory: ${resolvedPath}`);
+    }
+
+    return files;
 }
 
 function buildFallbackResult(meetingFolder, error) {
@@ -66,8 +113,7 @@ module.exports = {
         try {
             console.log("1️⃣ Transcribing Segments...");
 
-            const files = fs.readdirSync(meetingFolder);
-            const mp3Files = files.filter(f => f.endsWith(".mp3")).sort().map(f => path.join(meetingFolder, f));
+            const mp3Files = resolveMp3Files(meetingFolder);
 
             let fullTranscriptText = "";
             let fullTranscriptionObject = null;
@@ -91,7 +137,7 @@ module.exports = {
                 cleanedParts.push(cleanedChunk.trim());
             }
 
-            const cleanedTranscript = cleanedParts.join("\n\n");
+            const cleanedTranscript = addSpeakerLabels(cleanedParts.join("\n\n"));
 
             console.log("3️⃣ Generating summary...");
             const summary = await summarize(cleanedTranscript);
@@ -114,10 +160,22 @@ module.exports = {
     },
 
     async saveOutputs(meetingFolder, result) {
-        fs.mkdirSync(meetingFolder, { recursive: true });
+        if (!meetingFolder || typeof meetingFolder !== "string") {
+            throw new Error("Invalid meeting folder path.");
+        }
 
-        const transcriptPath = path.join(meetingFolder, "transcript.txt");
-        const summaryPath = path.join(meetingFolder, "summary.md");
+        const resolvedPath = path.resolve(meetingFolder);
+        if (fs.existsSync(resolvedPath)) {
+            const stats = fs.statSync(resolvedPath);
+            if (!stats.isDirectory()) {
+                throw new Error(`Expected a meeting folder, but found a file: ${resolvedPath}`);
+            }
+        } else {
+            fs.mkdirSync(resolvedPath, { recursive: true });
+        }
+
+        const transcriptPath = path.join(resolvedPath, "transcript.txt");
+        const summaryPath = path.join(resolvedPath, "summary.md");
 
         fs.writeFileSync(transcriptPath, result.cleanedTranscript || "Empty Transcript", "utf8");
         fs.writeFileSync(summaryPath, result.summary || "Empty Summary", "utf8");
@@ -125,19 +183,66 @@ module.exports = {
         // Sync Q&A Data dynamically
         if (result.qaData && Array.isArray(result.qaData)) {
             const dbPath = path.join(__dirname, "..", "database.json");
-            let existingDb = [];
+            let existingDb = {
+                version: 1,
+                meetings: [],
+                qa: []
+            };
+
             if (fs.existsSync(dbPath)) {
                 try {
                     existingDb = JSON.parse(fs.readFileSync(dbPath, "utf8"));
-                } catch (e) { console.error("Could not parse existing database", e); }
+
+                    // حماية لو الملف قديم أو ناقص
+                    existingDb.version ??= 1;
+                    existingDb.meetings ??= [];
+                    existingDb.qa ??= [];
+
+                } catch (e) {
+                    console.error("Could not parse existing database", e);
+                }
             }
-            const augmentedQA = result.qaData.map(qa => ({
-                ...qa,
-                meetingId: path.basename(meetingFolder),
-                timestamp: Date.now()
+            const meetingId = path.basename(meetingFolder);
+
+            const meetingInfo = {
+                id: meetingId,
+                title: meetingId,
+                createdAt: new Date().toISOString(),
+                transcriptFile: transcriptPath,
+                summaryFile: summaryPath,
+            };
+
+            const qaItems = Array.isArray(result.qaData)
+                ? result.qaData
+                : [];
+
+
+            const augmentedQA = qaItems.map(qa => ({
+                id: crypto.randomUUID(),
+                meetingId,
+                createdAt: new Date().toISOString(),
+                ...qa
             }));
-            const updatedDb = existingDb.concat(augmentedQA);
-            fs.writeFileSync(dbPath, JSON.stringify(updatedDb, null, 2), "utf8");
+
+            
+
+            // أضف الاجتماع مرة واحدة فقط
+            if (!existingDb.meetings.some(m => m.id === meetingId)) {
+                existingDb.meetings.push(meetingInfo);
+            }
+
+            // أضف الـ Q&A
+            existingDb.qa.push(...augmentedQA);
+
+            fs.writeFileSync(
+                dbPath,
+                JSON.stringify(existingDb, null, 2),
+                "utf8"
+            );
+
+            console.log(
+                `Database updated successfully. Meetings: ${existingDb.meetings.length}, Q&A: ${existingDb.qa.length}`
+            );
         }
 
         return {

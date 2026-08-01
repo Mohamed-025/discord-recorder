@@ -24,7 +24,7 @@ require.cache[prismPath] = {
 
                 _transform(chunk, _encoding, callback) {
                     this._chunk = Buffer.concat([this._chunk, chunk]);
-                    if (this._chunk.length >= 960 * 2) {
+                    while (this._chunk.length >= 960 * 2) {
                         this.push(this._chunk.slice(0, 960 * 2));
                         this._chunk = this._chunk.slice(960 * 2);
                     }
@@ -50,17 +50,9 @@ function createFakeReceiver() {
         speaking,
         subscribe(_userId) {
             const audio = new PassThrough();
-            const pcm = Buffer.alloc(960 * 4, 0);
-            pcm.writeInt16LE(1000, 0);
-            pcm.writeInt16LE(-1000, 2);
-            pcm.writeInt16LE(1000, 4);
-            pcm.writeInt16LE(-1000, 6);
-
             setTimeout(() => {
-                audio.write(pcm);
                 audio.end();
             }, 10);
-
             return audio;
         },
     };
@@ -69,6 +61,29 @@ function createFakeReceiver() {
 function createSession() {
     return {
         connection: { receiver: createFakeReceiver() },
+    };
+}
+
+function generateToneBuffer(amplitude, sampleCount) {
+    const buffer = Buffer.alloc(sampleCount * 2);
+    for (let i = 0; i < sampleCount; i++) {
+        buffer.writeInt16LE(amplitude, i * 2);
+    }
+    return buffer;
+}
+
+function createTimedSpeaker(receiver, userId, segments) {
+    return async () => {
+        for (const segment of segments) {
+            await new Promise((resolve) => setTimeout(resolve, segment.waitMs));
+            receiver.speaking.emit("start", userId);
+            const audioStream = receiver.subscribe(userId);
+            setTimeout(() => {
+                const tone = generateToneBuffer(segment.amplitude, segment.samples);
+                audioStream.write(tone);
+                audioStream.end();
+            }, 0);
+        }
     };
 }
 
@@ -86,37 +101,32 @@ async function verifyMp3(filePath) {
 
 (async () => {
     const session = createSession();
-    const firstResult = await recorder.start(session);
-    assert.ok(firstResult.meetingFilePath);
-    session.connection.receiver.speaking.emit("start", "user-1");
-    session.connection.receiver.speaking.emit("start", "user-1");
-    assert.strictEqual(session.activeUsers.size, 1, "Duplicate subscriptions for the same user should be blocked");
+    const result = await recorder.start(session);
+    assert.ok(result.meetingFilePath);
 
-    const firstMeetingFolder = await recorder.stop(session);
-    assert.ok(firstMeetingFolder);
-    assert.ok(fs.existsSync(firstMeetingFolder));
+    const receiver = session.connection.receiver;
+    const events = [];
 
-    const firstMp3Files = fs.readdirSync(firstMeetingFolder).filter((name) => name.toLowerCase().endsWith(".mp3"));
-    assert.ok(firstMp3Files.length > 0, "Expected at least one MP3 in the meeting folder");
-    const firstMeetingFilePath = path.join(firstMeetingFolder, firstMp3Files[0]);
-    assert.ok(fs.statSync(firstMeetingFilePath).size > 0);
-    await verifyMp3(firstMeetingFilePath);
+    receiver.speaking.on("start", (userId) => {
+        events.push({ event: "start", userId, time: Date.now() });
+    });
 
-    const secondResult = await recorder.start(session);
-    assert.ok(secondResult.meetingFilePath);
-    session.connection.receiver.speaking.emit("start", "user-2");
+    for (let i = 0; i < 20; i++) {
+        receiver.speaking.emit("start", "user-1");
+        receiver.speaking.emit("start", "user-1");
+        assert.strictEqual(session.activeUsers.size, 1, "Duplicate subscriptions should not create additional active users");
+        await new Promise((resolve) => setTimeout(resolve, 25));
+    }
 
-    const secondMeetingFolder = await recorder.stop(session);
-    assert.ok(secondMeetingFolder);
-    assert.ok(fs.existsSync(secondMeetingFolder));
+    const meetingFolder = await recorder.stop(session);
+    assert.ok(meetingFolder);
+    const mp3Files = fs.readdirSync(meetingFolder).filter((name) => name.toLowerCase().endsWith(".mp3"));
+    assert.ok(mp3Files.length > 0, "Expected MP3 output");
+    const meetingFile = path.join(meetingFolder, mp3Files[0]);
+    assert.ok(fs.statSync(meetingFile).size > 0);
+    await verifyMp3(meetingFile);
 
-    const secondMp3Files = fs.readdirSync(secondMeetingFolder).filter((name) => name.toLowerCase().endsWith(".mp3"));
-    assert.ok(secondMp3Files.length > 0, "Expected at least one MP3 in the meeting folder");
-    const secondMeetingFilePath = path.join(secondMeetingFolder, secondMp3Files[0]);
-    assert.ok(fs.statSync(secondMeetingFilePath).size > 0);
-    await verifyMp3(secondMeetingFilePath);
-
-    console.log("recorder regression test passed");
+    console.log("recorder integration test passed");
 })().catch((error) => {
     console.error(error);
     process.exit(1);

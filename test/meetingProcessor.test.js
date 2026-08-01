@@ -13,7 +13,7 @@ require.cache[aiPath] = {
     loaded: true,
     exports: {
         transcribe: async () => ({ text: "Hello team. This is the first point.\n\nSecond point." }),
-        chat: async (_systemPrompt, userPrompt) => userPrompt,
+        chat: async () => "[]",
     },
 };
 
@@ -62,7 +62,7 @@ const meetingProcessor = require("../services/meetingProcessor");
         filename: aiPath,
         loaded: true,
         exports: {
-            transcribe: async () => new Promise(() => {}),
+            transcribe: async () => new Promise(() => { }),
             chat: async () => "",
         },
     };
