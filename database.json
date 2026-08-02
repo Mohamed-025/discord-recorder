@@ -7,6 +7,13 @@
       "createdAt": "2026-08-01T20:01:49.095Z",
       "transcriptFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-01T20-00-45-596Z\\transcript.txt",
       "summaryFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-01T20-00-45-596Z\\summary.md"
+    },
+    {
+      "id": "meeting_2026-08-02T08-55-03-611Z",
+      "title": "meeting_2026-08-02T08-55-03-611Z",
+      "createdAt": "2026-08-02T08:56:06.119Z",
+      "transcriptFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-02T08-55-03-611Z\\transcript.txt",
+      "summaryFile": "D:\\Trading\\Bot\\discord-recorder\\recordings\\meeting_2026-08-02T08-55-03-611Z\\summary.md"
     }
   ],
   "qa": [
@@ -79,6 +86,60 @@
         "Meeting"
       ],
       "importance": "medium"
+    },
+    {
+      "id": "47157e98-2efa-449a-8b2a-1d3118b8374f",
+      "meetingId": "meeting_2026-08-02T08-55-03-611Z",
+      "createdAt": "2026-08-02T08:56:06.120Z",
+      "topic": "AI",
+      "subtopic": "Q&A System",
+      "title": "Reliable Q&A Data",
+      "question": "What is the main goal of the Q&A system?",
+      "answer": "The main goal of the Q&A system is to convert questions and answers into a reliable data-based system that can be queried for useful information.",
+      "keywords": [
+        "Q&A System",
+        "Data Based",
+        "JSON",
+        "Database",
+        "Search Queries"
+      ],
+      "importance": "high"
+    },
+    {
+      "id": "2120909c-909e-4a34-b6a5-9200874bd710",
+      "meetingId": "meeting_2026-08-02T08-55-03-611Z",
+      "createdAt": "2026-08-02T08:56:06.120Z",
+      "topic": "Database",
+      "subtopic": "Querying",
+      "title": "Searching Database",
+      "question": "What type of queries can be performed on the database?",
+      "answer": "The database can be queried for searching and retrieving useful information, allowing for efficient data retrieval.",
+      "keywords": [
+        "Database Queries",
+        "Search",
+        "Data Retrieval",
+        "JSON",
+        "Q&A System"
+      ],
+      "importance": "medium"
+    },
+    {
+      "id": "74df18e0-4425-4d8b-9256-58ce40738028",
+      "meetingId": "meeting_2026-08-02T08-55-03-611Z",
+      "createdAt": "2026-08-02T08:56:06.120Z",
+      "topic": "AI",
+      "subtopic": "Bot Functionality",
+      "title": "Bot's Purpose",
+      "question": "What is the purpose of the bot named الصمعة?",
+      "answer": "The bot named الصمعة is designed to convert Q&A sessions into a data-based system in JSON format, allowing for reliable data storage and querying.",
+      "keywords": [
+        "Bot",
+        "Q&A System",
+        "JSON",
+        "Data Storage",
+        "AI"
+      ],
+      "importance": "high"
     }
   ]
 }
